@@ -9,7 +9,7 @@
     depends=('python' 'python-setuptools') # Core dependencies
     makedepends=('git') # If you're fetching from Git, for example
 
-    source=("git+${url}.git#tag=v${pkgver}") # Source URL for makepkg
+    source=("git+${url}.git") # Source URL for makepkg
     sha256sums=('SKIP') # Replace with actual checksum if not using git tag or if using a tarball
 
     build() {
