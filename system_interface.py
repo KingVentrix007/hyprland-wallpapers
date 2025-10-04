@@ -3,7 +3,8 @@ import subprocess
 import filetype
 import json
 import signal
-
+import GPUtil
+import time
 # Store wallpaper processes here: {screen_name: {"path": str, "pid": int, "type": str}}
 screen_wallpapers = {}
 
@@ -59,9 +60,10 @@ def set_video_wallpaper(path=None, screen_name=None):
     stop_wallpaper(screen_name)  # Kill any existing wallpaper for that screen
 
     if screen_name == "ALL":
-        process = run_command(["mpvpaper", "-o", "--loop", path])
+        process = run_command(["mpvpaper", "-o", "--loop --hwdec=auto", path])
     else:
-        process = run_command(["mpvpaper", "-o", "--loop", screen_name, path])
+        
+        process = run_command(["mpvpaper", "-o", "--loop --hwdec=auto", screen_name, path])
 
     # Save process info
     screen_wallpapers[screen_name] = {
@@ -82,7 +84,7 @@ def set_static_wallpaper(path=None, screen_name=None):
     if screen_name == "ALL":
         process = run_command(["swww", "img", path])
     else:
-        process = run_command(["swww", "img", "-o", screen_name, path])
+        process = run_command(["swww", "img", "-o", screen_name, path,"--transition-type","grow","--transition-duration","0.3"])
 
     # Save process info (note: swww usually daemonizes, may not keep process.pid)
     screen_wallpapers[screen_name] = {
@@ -108,8 +110,25 @@ def set_wallpaper(path,screen):
         return -1
     file_type = detect_media_type(path)
     if file_type == "image":
-        return set_static_wallpaper(path,screen)
+        # print(screen,"->",screen_wallpapers.get(screen)["type"])
+        if(screen_wallpapers.get(screen,{}).get("type","other") == "video"):
+            set_static_wallpaper(path,screen)
+            print("HELLO")
+            time.sleep(0.3)
+            command = ["kill",str(screen_wallpapers.get(screen)["pid"])]
+            print("pid",str(screen_wallpapers.get(screen)["pid"]))
+            result = subprocess.run(command)
+        else:
+            set_static_wallpaper(path,screen)
+
+        
+
+            
     elif file_type in ("video", "gif"):
+        gpus = GPUtil.getGPUs()
+        gpu = gpus[0]
+        if((gpu.load * 100) >= 90):
+            return -1
         return set_video_wallpaper(path,screen)
     else:
         return -1

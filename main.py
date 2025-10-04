@@ -1,14 +1,16 @@
 # wallpaper_gui.py (headless daemon update)
+import time
 import os
 import sys
 import json
 import subprocess
 import tempfile
 import asyncio
+import GPUtil
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QVBoxLayout, QPushButton,
     QListWidget, QListWidgetItem, QFileDialog,
-    QMessageBox, QComboBox, QHBoxLayout, QScrollArea
+    QMessageBox, QComboBox, QHBoxLayout, QScrollArea,QRadioButton,QAbstractItemView
 )
 from PyQt6.QtGui import QPixmap, QIcon
 from PyQt6.QtCore import QSize, Qt
@@ -22,6 +24,7 @@ CONFIG_FILE = os.path.expanduser("~/.config/hypr_wallpapers.json")
 SUPPORTED_IMAGE_EXT = [".jpg", ".jpeg", ".png", ".bmp", ".gif"]
 SUPPORTED_VIDEO_EXT = [".mp4", ".mkv", ".mov", ".webm"]
 
+multi_papers = {} # screen_name: {current_paper:0,papers:[]}
 
 def get_monitors():
     """Fetch monitors via hyprctl."""
@@ -60,12 +63,51 @@ def load_wallpaper_config():
     return {}
 
 
+is_multi_paper = False
+global_multi_papers = None
+sleep_time = 30
+async def cycle_papers():
+    # global global_multi_papers
+    while True:
+        apply_wallpapers(global_multi_papers)
+        await asyncio.sleep(sleep_time)
+        gpus = GPUtil.getGPUs()
+        gpu = gpus[0]
+        if((gpu.load * 100) >= 90):
+            subprocess.run(["pkill", "mpvpaper"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print("Cycle")
 def apply_wallpapers(wallpapers):
+    global is_multi_paper,global_multi_papers
     """Apply wallpapers to all monitors in the dict."""
     # Kill any existing mpv processes first
-    subprocess.run(["pkill", "mpv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    
+    global_multi_papers = wallpapers
     for monitor, path in wallpapers.items():
-        system_interface.set_wallpaper(path, monitor)
+        if(type(path) == dict):
+            is_multi_paper = True
+            paper_num = path.get("current_paper",0)
+            paper_list = path.get("papers",[])
+            path_to_use = paper_list[paper_num]
+            if(paper_num-1 >= 0):
+                current_paper = paper_list[paper_num-1]
+            else:
+                current_paper = paper_list[len(paper_list)-1]
+            if(paper_num+1 > len(paper_list)-1):
+                paper_num = 0
+                wallpapers[monitor]["current_paper"] = paper_num
+
+            else:
+                paper_num+=1
+                wallpapers[monitor]["current_paper"] = paper_num
+            # if(system_interface.detect_media_type(current_paper) != "image"):
+            #     subprocess.run(["swww", "img"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            #     subprocess.run(["pkill", "mpvpaper"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            system_interface.set_wallpaper(path_to_use, monitor)
+        
+
+        else:
+            system_interface.set_wallpaper(path, monitor)
 
 
 class ConfigHandler(FileSystemEventHandler):
@@ -78,6 +120,7 @@ class ConfigHandler(FileSystemEventHandler):
 
 async def run_headless_daemon():
     """Run wallpaper daemon that watches config changes."""
+    subprocess.run(["pkill", "mpvpaper"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Apply immediately at startup
     wallpapers = load_wallpaper_config()
     apply_wallpapers(wallpapers)
@@ -88,7 +131,9 @@ async def run_headless_daemon():
     observer.schedule(event_handler, os.path.dirname(CONFIG_FILE), recursive=False)
     observer.start()
     print("Wallpaper daemon running. Watching config for changes...")
+    if(is_multi_paper == True):
 
+        await cycle_papers()
     try:
         while True:
             await asyncio.sleep(1)
@@ -124,6 +169,16 @@ class WallpaperApp(QWidget):
         top_bar.addWidget(QLabel("🖥️ Monitor:"))
         top_bar.addWidget(self.monitor_selector)
 
+        self.use_multiple_button = QPushButton("Single Paper")
+        self.use_multiple_button.clicked.connect(self.set_select_mode)
+        self.select_mode = 1 # 1: 1 paper, 2: Multiple papers
+
+        # top_bar.addWidget(QLabel("Multiple Papers: "))
+        top_bar.addWidget(self.use_multiple_button)
+
+
+
+        # self.
         main_layout.addLayout(top_bar)
 
         # Scroll area for wallpapers
@@ -170,8 +225,24 @@ class WallpaperApp(QWidget):
                 border-radius: 6px;
                 padding: 6px;
             }
+             QRadioButton {
+                background-color: #3a3a5c;
+                border: none;
+                
+            }
         """)
 
+    def set_select_mode(self):
+        if(self.select_mode == 1):
+            self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+            self.select_mode = 2
+            self.use_multiple_button.setText("Multiple Papers")
+        elif(self.select_mode == 2):
+            self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+            self.select_mode = 1
+            self.use_multiple_button.setText("Single Paper")
+        else:
+             self.use_multiple_button.setText("Single WHAT")
     def choose_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose Wallpaper Folder")
         if not folder:
@@ -205,22 +276,39 @@ class WallpaperApp(QWidget):
                 self.file_list.addItem(item)
 
     def apply_wallpaper(self):
-        selected_item = self.file_list.currentItem()
-        if not selected_item:
-            QMessageBox.warning(self, "No selection", "Please select a file first.")
-            return
+        if(self.select_mode == 1):
+            selected_item = self.file_list.currentItem()
+            if not selected_item:
+                QMessageBox.warning(self, "No selection", "Please select a file first.")
+                return
 
-        file_path = selected_item.data(256)
-        monitor = self.monitor_selector.currentText()
+            file_path = selected_item.data(256)
+            monitor = self.monitor_selector.currentText()
 
-        result = system_interface.set_wallpaper(file_path, monitor)
-        if result == 0:
-            # Save to config
-            self.wallpaper_config[monitor] = file_path
-            save_wallpaper_config(self.wallpaper_config)
-            QMessageBox.information(self, "Success", f"Wallpaper set for {monitor}!")
+            result = system_interface.set_wallpaper(file_path, monitor)
+            if result == 0:
+                # Save to config
+                self.wallpaper_config[monitor] = file_path
+                save_wallpaper_config(self.wallpaper_config)
+                QMessageBox.information(self, "Success", f"Wallpaper set for {monitor}!")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to set wallpaper.")
         else:
-            QMessageBox.critical(self, "Error", "Failed to set wallpaper.")
+            selected_items = self.file_list.selectedItems()
+            selected_file_paths = []
+            for item in selected_items:
+                file_path = item.data(256)
+                selected_file_paths.append(file_path)
+            monitor = self.monitor_selector.currentText()
+            self.wallpaper_config[monitor] = {"current_paper":0,"papers":selected_file_paths,"sleep_time":60}
+            apply_wallpapers(self.wallpaper_config)
+            # self.wallpaper_config[monitor] = {"current_paper":0,"papers":selected_file_paths}
+            
+            save_wallpaper_config(self.wallpaper_config)
+
+
+                
+
 
 
 def main():
